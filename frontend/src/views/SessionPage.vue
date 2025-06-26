@@ -160,8 +160,11 @@
       <el-input
         v-model="newMessage"
         placeholder="输入消息..."
-        @keyup.enter="sendMessage"
+        @keydown="handleKeyDown"
         class="message-input"
+        type="textarea"
+        :autosize="{ minRows: 1, maxRows: 4 }"
+        resize="none"
       />
       <el-button type="primary" @click="sendMessage" :disabled="!newMessage.trim()" size="small">发送</el-button>
     </div>
@@ -252,6 +255,17 @@ const imageViewerVisible = ref(false);
 const currentImageUrl = ref('');
 const showInfoPanel = ref(false);
 
+// 检测是否为移动设备
+const isMobile = ref(false);
+
+// 检测设备类型
+function detectDevice() {
+  const userAgent = navigator.userAgent.toLowerCase();
+  const isMobileDevice = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent);
+  const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  isMobile.value = isMobileDevice || isTouchDevice;
+}
+
 const connectionStatus = reactive({
   type: 'info',
   text: '正在连接...'
@@ -273,6 +287,9 @@ let cookieRefreshTimer = null;
 
 // --- Lifecycle and Connection ---
 onMounted(() => {
+  // 检测设备类型
+  detectDevice();
+
   // 验证是否有有效的匹配码
   if (!matchCode.value || matchCode.value.length !== 6) {
     ElMessage.error('无效的会话访问');
@@ -436,6 +453,25 @@ function handleReceiveMessage(message) {
 }
 
 // --- Text Messaging ---
+function handleKeyDown(event) {
+  if (event.key === 'Enter') {
+    if (isMobile.value) {
+      // 移动端：Enter键不发送，只换行
+      return;
+    } else {
+      // 桌面端：Enter发送，Shift+Enter换行
+      if (event.shiftKey) {
+        // Shift+Enter：换行，不阻止默认行为
+        return;
+      } else {
+        // 单独Enter：发送消息
+        event.preventDefault();
+        sendMessage();
+      }
+    }
+  }
+}
+
 function sendMessage() {
   const content = newMessage.value.trim();
   if (!content) return;
@@ -1127,6 +1163,13 @@ function scrollToBottom() {
 .message-bubble-wrapper.is-self .message-bubble {
   background-color: #409eff;
   color: #ffffff;
+}
+
+/* 消息内容样式 */
+.message-content {
+  white-space: pre-wrap; /* 保留换行和空格 */
+  word-wrap: break-word; /* 长单词换行 */
+  line-height: 1.4; /* 行高 */
 }
 
 /* 输入区域 */
