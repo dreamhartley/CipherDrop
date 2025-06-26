@@ -121,6 +121,9 @@ docker-compose.override.yml
 package-lock.json.bak
 yarn.lock.bak
 .pnpm-store/
+frontend/package-lock.json
+backend/package-lock.json
+frontend/.vscode
 
 # Runtime and process files
 .pm2/
