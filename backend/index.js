@@ -104,6 +104,40 @@ const upload = multer({
   }
 });
 
+// 分块上传专用的 multer 配置
+const chunkStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    // 分块文件存储在临时目录中
+    const uploadId = req.body.uploadId;
+    if (!uploadId) {
+      return cb(new Error('Missing uploadId for chunk upload'));
+    }
+
+    const uploadInfo = chunkedUploadManager.getUploadInfo(uploadId);
+    if (!uploadInfo) {
+      return cb(new Error('Upload not found'));
+    }
+
+    console.log(`Chunk destination - UploadId: ${uploadId}, TempDir: ${uploadInfo.tempDir}`);
+    cb(null, uploadInfo.tempDir);
+  },
+  filename: function (req, file, cb) {
+    // 分块文件使用简单的命名方式
+    const chunkIndex = req.body.chunkIndex;
+    cb(null, `chunk_${chunkIndex}`);
+  }
+});
+
+const chunkUpload = multer({
+  storage: chunkStorage,
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB per chunk
+    fieldSize: 1024, // 1KB for field data
+    fields: 5,
+    files: 1
+  }
+});
+
 // 添加Multer错误处理中间件
 const handleMulterError = (error, req, res, next) => {
   if (error instanceof multer.MulterError) {
@@ -231,7 +265,7 @@ app.post('/api/upload/init', async (req, res) => {
 });
 
 // 上传单个分块
-app.post('/api/upload/chunk', upload.single('chunk'), handleMulterError, (req, res) => {
+app.post('/api/upload/chunk', chunkUpload.single('chunk'), handleMulterError, (req, res) => {
   const { uploadId, chunkIndex } = req.body;
 
   if (!uploadId || chunkIndex === undefined || !req.file) {
@@ -245,28 +279,24 @@ app.post('/api/upload/chunk', upload.single('chunk'), handleMulterError, (req, r
     return res.status(400).json({ error: 'Invalid chunk index' });
   }
 
-  fs.readFile(req.file.path)
-    .then(chunkData => {
-      return chunkedUploadManager.uploadChunk(uploadId, chunkIndexNum, chunkData);
-    })
-    .then(success => {
-      // 删除临时文件
-      return fs.unlink(req.file.path).then(() => success);
-    })
-    .then(success => {
-      if (success) {
-        const progress = chunkedUploadManager.getUploadProgress(uploadId);
-        res.json({ success: true, progress });
-      } else {
-        res.status(500).json({ error: 'Failed to save chunk' });
-      }
-    })
-    .catch(error => {
-      console.error('Failed to upload chunk:', error);
-      // 尝试删除临时文件
-      fs.unlink(req.file.path).catch(() => {});
-      res.status(500).json({ error: error.message });
-    });
+  // 分块文件已经直接保存到正确位置，不需要再次读取和移动
+  try {
+    const uploadInfo = chunkedUploadManager.getUploadInfo(uploadId);
+    if (!uploadInfo) {
+      return res.status(404).json({ error: 'Upload not found' });
+    }
+
+    // 标记分块已接收
+    uploadInfo.receivedChunks.add(chunkIndexNum);
+    uploadInfo.chunkPaths.set(chunkIndexNum, req.file.path);
+    uploadInfo.lastActivityAt = Date.now();
+
+    const progress = chunkedUploadManager.getUploadProgress(uploadId);
+    res.json({ success: true, progress });
+  } catch (error) {
+    console.error('Failed to process chunk:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // 完成分块上传

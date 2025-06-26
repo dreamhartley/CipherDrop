@@ -49,6 +49,15 @@ class ChunkedUploadManager {
   }
 
   /**
+   * 获取上传信息
+   * @param {string} uploadId - 上传ID
+   * @returns {object|null} uploadInfo - 上传信息
+   */
+  getUploadInfo(uploadId) {
+    return this.uploads.get(uploadId) || null;
+  }
+
+  /**
    * 上传单个分块
    * @param {string} uploadId - 上传ID
    * @param {number} chunkIndex - 分块索引

@@ -61,7 +61,6 @@
                   <div class="file-name">{{ msg.metadata.name }}</div>
                   <div class="file-size">
                     {{ formatFileSize(msg.metadata.size) }}
-                    <span v-if="msg.isChunkedUpload" class="chunked-badge">分块上传</span>
                   </div>
                 </div>
               </div>
@@ -74,6 +73,8 @@
                   class="video-preview"
                   controls
                   preload="metadata"
+                  :autoplay="msg.shouldAutoplay"
+                  @loadeddata="handleVideoLoaded(msg)"
                 >
                   您的浏览器不支持视频播放
                 </video>
@@ -89,7 +90,7 @@
                   <div class="file-name">{{ msg.metadata.name }}</div>
                   <div class="file-size">
                     {{ formatFileSize(msg.metadata.size) }}
-                    <span v-if="msg.isChunkedUpload" class="chunked-badge">分块上传</span>
+                    <span v-if="msg.metadata.encrypted === false" class="unencrypted-badge">未加密</span>
                   </div>
                 </div>
               </div>
@@ -102,6 +103,8 @@
                   class="audio-preview"
                   controls
                   preload="metadata"
+                  :autoplay="msg.shouldAutoplay"
+                  @loadeddata="handleVideoLoaded(msg)"
                 >
                   您的浏览器不支持音频播放
                 </audio>
@@ -117,7 +120,7 @@
                   <div class="file-name">{{ msg.metadata.name }}</div>
                   <div class="file-size">
                     {{ formatFileSize(msg.metadata.size) }}
-                    <span v-if="msg.isChunkedUpload" class="chunked-badge">分块上传</span>
+                    <span v-if="msg.metadata.encrypted === false" class="unencrypted-badge">未加密</span>
                   </div>
                 </div>
               </div>
@@ -131,7 +134,7 @@
                   <div class="file-name">{{ msg.metadata.name }}</div>
                   <div class="file-size">
                     {{ formatFileSize(msg.metadata.size) }}
-                    <span v-if="msg.isChunkedUpload" class="chunked-badge">分块上传</span>
+                    <span v-if="msg.metadata.encrypted === false" class="unencrypted-badge">未加密</span>
                   </div>
                 </div>
               </div>
@@ -219,9 +222,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, nextTick } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, nextTick, h } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { ElMessage, ElImageViewer } from 'element-plus';
+import { ElMessage, ElImageViewer, ElMessageBox } from 'element-plus';
 import { Document, Paperclip, Picture, Upload, VideoPlay, Microphone, Loading, Operation, Close } from '@element-plus/icons-vue';
 import { socket } from '../services/socket';
 import api from '../services/api';
@@ -614,6 +617,59 @@ async function uploadFileChunked(encryptedFile, fileMessage) {
   return await uploader.upload(encryptedFile);
 }
 
+// 大文件加密警告状态
+const largeFileEncryptionWarningShown = ref(false);
+
+// 显示大文件加密警告弹窗
+async function showLargeFileEncryptionWarning() {
+  return new Promise((resolve) => {
+    // 使用一个简单的变量来跟踪勾选状态
+    let dontShowAgain = false;
+
+    const messageVNode = h('div', [
+      h('p', { style: 'margin-bottom: 15px; line-height: 1.5;' },
+        '由于浏览器内存限制，超过100MB的文件不支持端到端加密，但仍会在会话结束后自动销毁。'
+      ),
+      h('div', { style: 'display: flex; align-items: center; margin-top: 15px;' }, [
+        h('input', {
+          type: 'checkbox',
+          id: 'dontShowAgain',
+          style: 'margin-right: 8px;',
+          onInput: (e) => {
+            dontShowAgain = e.target.checked;
+          }
+        }),
+        h('label', {
+          for: 'dontShowAgain',
+          style: 'cursor: pointer; user-select: none; font-size: 14px;'
+        }, '本次会话中不再提示')
+      ])
+    ]);
+
+    ElMessageBox({
+      title: '大文件上传提醒',
+      message: messageVNode,
+      type: 'warning',
+      showCancelButton: true,
+      confirmButtonText: '继续上传',
+      cancelButtonText: '取消',
+      beforeClose: (action, instance, done) => {
+        if (action === 'confirm') {
+          if (dontShowAgain) {
+            largeFileEncryptionWarningShown.value = true;
+          }
+          resolve(true);
+        } else {
+          resolve(false);
+        }
+        done();
+      }
+    }).catch(() => {
+      resolve(false);
+    });
+  });
+}
+
 async function processFiles(files) {
   for (const file of files) {
     // 验证文件
@@ -625,6 +681,15 @@ async function processFiles(files) {
 
     const fileId = `${Date.now()}-${Math.random()}`;
     const isChunkedUpload = ChunkedUploader.shouldUseChunkedUpload(file);
+    const isLargeFile = file.size > 100 * 1024 * 1024; // 100MB
+
+    // 检查是否需要显示大文件加密警告
+    if (isLargeFile && !largeFileEncryptionWarningShown.value) {
+      const shouldContinue = await showLargeFileEncryptionWarning();
+      if (!shouldContinue) {
+        continue; // 用户取消上传
+      }
+    }
 
     const fileMessage = reactive({
       id: fileId,
@@ -633,6 +698,7 @@ async function processFiles(files) {
       timestamp: Date.now(),
       progress: 0,
       isChunkedUpload,
+      isLargeFile,
       metadata: {
         name: file.name,
         size: file.size,
@@ -656,38 +722,50 @@ async function processFiles(files) {
     scrollToBottom();
 
     try {
-      const key = await crypto.generateKey();
-      const exportedKey = await crypto.exportKey(key);
-
-      const fileBuffer = await file.arrayBuffer();
-      const encryptedBuffer = await crypto.encrypt(fileBuffer, key);
-
-      // 创建一个新的File对象，保持原始文件名
-      const encryptedFile = new File([encryptedBuffer], file.name, {
-        type: file.type || 'application/octet-stream'
-      });
-
       let uploadedFileData;
+      let encryptionKey = null;
 
-      // 根据文件大小选择上传方式
-      if (isChunkedUpload) {
-        // 使用分块上传
-        uploadedFileData = await uploadFileChunked(encryptedFile, fileMessage);
+      if (isLargeFile) {
+        // 大文件不进行端到端加密，直接上传原文件
+        if (isChunkedUpload) {
+          uploadedFileData = await uploadFileChunked(file, fileMessage);
+        } else {
+          uploadedFileData = await api.uploadFile(file, (progressEvent) => {
+            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            fileMessage.progress = percentCompleted;
+          }, matchCode.value);
+        }
       } else {
-        // 使用普通上传
-        uploadedFileData = await api.uploadFile(encryptedFile, (progressEvent) => {
-          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          fileMessage.progress = percentCompleted;
-        }, matchCode.value);
+        // 小文件进行端到端加密
+        const key = await crypto.generateKey();
+        encryptionKey = await crypto.exportKey(key);
+
+        const fileBuffer = await file.arrayBuffer();
+        const encryptedBuffer = await crypto.encrypt(fileBuffer, key);
+
+        // 创建一个新的File对象，保持原始文件名
+        const encryptedFile = new File([encryptedBuffer], file.name, {
+          type: file.type || 'application/octet-stream'
+        });
+
+        if (isChunkedUpload) {
+          uploadedFileData = await uploadFileChunked(encryptedFile, fileMessage);
+        } else {
+          uploadedFileData = await api.uploadFile(encryptedFile, (progressEvent) => {
+            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            fileMessage.progress = percentCompleted;
+          }, matchCode.value);
+        }
       }
 
       // 更新消息元数据
       Object.assign(fileMessage.metadata, {
         ...uploadedFileData,
-        key: exportedKey,
+        key: encryptionKey, // 大文件时为null，小文件时为加密密钥
         name: file.name,
         type: file.type,
-        mimeType: file.type
+        mimeType: file.type,
+        encrypted: !isLargeFile // 标记是否加密
       });
       fileMessage.progress = 100;
 
@@ -702,10 +780,11 @@ async function processFiles(files) {
         timestamp: fileMessage.timestamp,
         metadata: {
           ...uploadedFileData,
-          key: exportedKey,
+          key: encryptionKey,
           name: file.name,
           type: file.type,
-          mimeType: file.type
+          mimeType: file.type,
+          encrypted: !isLargeFile
         },
       };
 
@@ -726,12 +805,20 @@ async function processFiles(files) {
 async function downloadFile(msg) {
   try {
     msg.isDownloading = true;
-    const encryptedBuffer = await api.downloadFile(msg.metadata.downloadUrl);
 
-    const key = await crypto.importKey(msg.metadata.key);
-    const decryptedBuffer = await crypto.decrypt(encryptedBuffer, key);
+    let blob;
 
-    const blob = new Blob([decryptedBuffer], { type: msg.metadata.mimeType || msg.metadata.type });
+    if (msg.metadata.encrypted === false || !msg.metadata.key) {
+      // 未加密的文件，直接下载
+      const fileBuffer = await api.downloadFile(msg.metadata.downloadUrl);
+      blob = new Blob([fileBuffer], { type: msg.metadata.mimeType || msg.metadata.type });
+    } else {
+      // 加密的文件，需要解密
+      const encryptedBuffer = await api.downloadFile(msg.metadata.downloadUrl);
+      const key = await crypto.importKey(msg.metadata.key);
+      const decryptedBuffer = await crypto.decrypt(encryptedBuffer, key);
+      blob = new Blob([decryptedBuffer], { type: msg.metadata.mimeType || msg.metadata.type });
+    }
 
     // 如果是图片文件且还没有预览，生成预览
     if (isImageFile(msg.metadata) && !msg.imagePreview) {
@@ -841,7 +928,7 @@ function generateLocalMediaPreview(fileMessage, file) {
 }
 
 async function generateImagePreview(message) {
-  if (!message.metadata || !message.metadata.downloadUrl || !message.metadata.key) {
+  if (!message.metadata || !message.metadata.downloadUrl) {
     return;
   }
 
@@ -851,11 +938,20 @@ async function generateImagePreview(message) {
   }
 
   try {
-    const encryptedBuffer = await api.downloadFile(message.metadata.downloadUrl);
-    const key = await crypto.importKey(message.metadata.key);
-    const decryptedBuffer = await crypto.decrypt(encryptedBuffer, key);
+    let blob;
 
-    const blob = new Blob([decryptedBuffer], { type: message.metadata.mimeType || message.metadata.type });
+    if (message.metadata.encrypted === false || !message.metadata.key) {
+      // 未加密的文件，直接下载
+      const fileBuffer = await api.downloadFile(message.metadata.downloadUrl);
+      blob = new Blob([fileBuffer], { type: message.metadata.mimeType || message.metadata.type });
+    } else {
+      // 加密的文件，需要解密
+      const encryptedBuffer = await api.downloadFile(message.metadata.downloadUrl);
+      const key = await crypto.importKey(message.metadata.key);
+      const decryptedBuffer = await crypto.decrypt(encryptedBuffer, key);
+      blob = new Blob([decryptedBuffer], { type: message.metadata.mimeType || message.metadata.type });
+    }
+
     const previewUrl = URL.createObjectURL(blob);
 
     // 找到历史记录中对应的消息并更新
@@ -879,7 +975,7 @@ async function generateImagePreview(message) {
 }
 
 async function generateMediaPreview(message, autoGenerate = false) {
-  if (!message.metadata || !message.metadata.downloadUrl || !message.metadata.key) {
+  if (!message.metadata || !message.metadata.downloadUrl) {
     return;
   }
 
@@ -897,11 +993,20 @@ async function generateMediaPreview(message, autoGenerate = false) {
   message.isLoadingPreview = true;
 
   try {
-    const encryptedBuffer = await api.downloadFile(message.metadata.downloadUrl);
-    const key = await crypto.importKey(message.metadata.key);
-    const decryptedBuffer = await crypto.decrypt(encryptedBuffer, key);
+    let blob;
 
-    const blob = new Blob([decryptedBuffer], { type: message.metadata.mimeType || message.metadata.type });
+    if (message.metadata.encrypted === false || !message.metadata.key) {
+      // 未加密的文件，直接下载
+      const fileBuffer = await api.downloadFile(message.metadata.downloadUrl);
+      blob = new Blob([fileBuffer], { type: message.metadata.mimeType || message.metadata.type });
+    } else {
+      // 加密的文件，需要解密
+      const encryptedBuffer = await api.downloadFile(message.metadata.downloadUrl);
+      const key = await crypto.importKey(message.metadata.key);
+      const decryptedBuffer = await crypto.decrypt(encryptedBuffer, key);
+      blob = new Blob([decryptedBuffer], { type: message.metadata.mimeType || message.metadata.type });
+    }
+
     const previewUrl = URL.createObjectURL(blob);
 
     // 找到历史记录中对应的消息并更新
@@ -916,10 +1021,18 @@ async function generateMediaPreview(message, autoGenerate = false) {
       // 直接更新历史记录中的消息
       history[messageIndex].mediaPreview = previewUrl;
       history[messageIndex].isLoadingPreview = false;
+      // 如果不是自动生成（即用户主动点击），则设置自动播放
+      if (!autoGenerate) {
+        history[messageIndex].shouldAutoplay = true;
+      }
     } else {
       // 如果没找到，直接更新传入的消息对象
       message.mediaPreview = previewUrl;
       message.isLoadingPreview = false;
+      // 如果不是自动生成（即用户主动点击），则设置自动播放
+      if (!autoGenerate) {
+        message.shouldAutoplay = true;
+      }
     }
   } catch (err) {
     console.error("Failed to generate media preview for", message.metadata.name, ":", err);
@@ -928,6 +1041,11 @@ async function generateMediaPreview(message, autoGenerate = false) {
       ElMessage.error(`无法预览 ${message.metadata.name}`);
     }
   }
+}
+
+function handleVideoLoaded(msg) {
+  // 视频加载完成后，重置自动播放标志
+  msg.shouldAutoplay = false;
 }
 
 function showImageViewer(msg) {
@@ -1339,17 +1457,20 @@ function scrollToBottom() {
 .message-bubble-wrapper.is-self .file-size {
   color: #dcdfe6;
 }
-.chunked-badge {
+
+
+.unencrypted-badge {
   display: inline-block;
-  background-color: #e6f7ff;
-  color: #1890ff;
+  background-color: #fff2e8;
+  color: #fa8c16;
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.7rem;
   margin-left: 8px;
-  border: 1px solid #91d5ff;
+  border: 1px solid #ffbb96;
 }
-.message-bubble-wrapper.is-self .chunked-badge {
+
+.message-bubble-wrapper.is-self .unencrypted-badge {
   background-color: rgba(255, 255, 255, 0.2);
   color: #ffffff;
   border-color: rgba(255, 255, 255, 0.3);
