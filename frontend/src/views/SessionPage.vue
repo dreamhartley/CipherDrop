@@ -1,28 +1,25 @@
 <template>
-  <el-container class="session-container">
-    <el-header class="session-header">
-      <div class="header-left">
-        <span>匹配码: <strong>{{ matchCode }}</strong></span>
-        <el-tag :type="connectionStatus.type">{{ connectionStatus.text }}</el-tag>
+  <div class="session-container">
+    <!-- 移动端优化的头部 -->
+    <div class="session-header">
+      <!-- 左上角菜单按钮 -->
+      <div class="header-menu-button" @click="toggleInfoPanel">
+        <el-icon :size="18"><Operation /></el-icon>
       </div>
-      <div class="header-right">
-        <div v-if="!storageUsage.loading" class="storage-info">
-          <span class="storage-text">存储: {{ storageUsage.formattedUsage }} / {{ storageUsage.formattedLimit }}</span>
-          <el-progress
-            v-if="!storageUsage.isUnlimited"
-            :percentage="storageUsage.usagePercentage"
-            :stroke-width="6"
-            :show-text="false"
-            :color="storageUsage.usagePercentage > 90 ? '#F56C6C' : storageUsage.usagePercentage > 70 ? '#E6A23C' : '#67C23A'"
-            class="storage-progress"
-          />
-          <span v-else class="unlimited-storage">∞</span>
-        </div>
-        <el-button @click="leaveSession" type="danger" plain>离开会话</el-button>
+
+      <!-- 占位区域 -->
+      <div class="header-spacer"></div>
+
+      <!-- 离开会话按钮 -->
+      <div class="header-actions">
+        <el-button @click="leaveSession" type="danger" size="small" plain>离开</el-button>
       </div>
-    </el-header>
-    <el-main 
-      class="message-area" 
+    </div>
+
+
+    <!-- 消息区域 -->
+    <div
+      class="message-area"
       ref="messageAreaRef"
       @dragover.prevent="handleDragOver"
       @dragenter.prevent="handleDragEnter"
@@ -31,8 +28,10 @@
       :class="{ 'drag-active': isDragActive }"
     >
       <div v-if="history.length === 0" class="no-messages">
-        <p>开始发送消息或文件吧！</p>
-        <p class="drag-hint">也可以拖拽文件到这里上传</p>
+        <div class="welcome-message">
+          <p class="welcome-text">开始发送消息或文件吧！</p>
+          <p class="drag-hint">也可以拖拽文件到这里上传</p>
+        </div>
       </div>
       <div v-else class="messages-list">
         <div 
@@ -152,18 +151,61 @@
           <p>松开以上传文件</p>
         </div>
       </div>
-    </el-main>
-    <el-footer class="message-input-area">
+    </div>
+
+    <!-- 输入区域 -->
+    <div class="message-input-area">
       <input type="file" ref="fileInputRef" @change="handleFileSelect" multiple style="display: none" />
-      <el-button @click="triggerFileInput" :icon="Paperclip" circle />
-      <el-input 
+      <el-button @click="triggerFileInput" :icon="Paperclip" circle size="small" />
+      <el-input
         v-model="newMessage"
-        placeholder="输入消息..." 
+        placeholder="输入消息..."
         @keyup.enter="sendMessage"
+        class="message-input"
       />
-      <el-button type="primary" @click="sendMessage" :disabled="!newMessage.trim()">发送</el-button>
-    </el-footer>
-  </el-container>
+      <el-button type="primary" @click="sendMessage" :disabled="!newMessage.trim()" size="small">发送</el-button>
+    </div>
+  </div>
+
+  <!-- 信息弹窗 - 左上角小弹窗 -->
+  <div v-if="showInfoPanel" class="info-popup-overlay" @click="closeInfoPanel">
+    <div class="info-popup" @click.stop>
+      <div class="info-popup-header">
+        <span class="popup-title">会话信息</span>
+        <el-button @click="closeInfoPanel" :icon="Close" size="small" text />
+      </div>
+
+      <div class="info-popup-content">
+        <div class="popup-item">
+          <div class="popup-label">匹配码</div>
+          <div class="popup-value match-code-popup" @click="copyMatchCode" title="点击复制">{{ matchCode }}</div>
+        </div>
+
+        <div class="popup-item" v-if="!storageUsage.loading">
+          <div class="popup-label">存储</div>
+          <div class="storage-popup">
+            <div class="storage-text-popup">
+              {{ storageUsage.formattedUsage }} / {{ storageUsage.formattedLimit }}
+            </div>
+            <el-progress
+              v-if="!storageUsage.isUnlimited"
+              :percentage="storageUsage.usagePercentage"
+              :stroke-width="4"
+              :show-text="false"
+              :color="storageUsage.usagePercentage > 90 ? '#F56C6C' : storageUsage.usagePercentage > 70 ? '#E6A23C' : '#67C23A'"
+              class="storage-progress-popup"
+            />
+            <div v-else class="unlimited-popup">∞</div>
+          </div>
+        </div>
+
+        <div class="popup-item">
+          <div class="popup-label">状态</div>
+          <el-tag :type="connectionStatus.type" size="small">{{ connectionStatus.text }}</el-tag>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Image Viewer -->
   <el-image-viewer
@@ -177,7 +219,7 @@
 import { ref, reactive, onMounted, onUnmounted, nextTick } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { ElMessage, ElImageViewer } from 'element-plus';
-import { Document, Paperclip, Picture, Upload, VideoPlay, Microphone, Loading } from '@element-plus/icons-vue';
+import { Document, Paperclip, Picture, Upload, VideoPlay, Microphone, Loading, Operation, Close } from '@element-plus/icons-vue';
 import { socket } from '../services/socket';
 import api from '../services/api';
 import crypto from '../services/crypto';
@@ -208,6 +250,7 @@ const messageAreaRef = ref(null);
 const isDragActive = ref(false);
 const imageViewerVisible = ref(false);
 const currentImageUrl = ref('');
+const showInfoPanel = ref(false);
 
 const connectionStatus = reactive({
   type: 'info',
@@ -767,6 +810,35 @@ function closeImageViewer() {
   currentImageUrl.value = '';
 }
 
+// --- UI Management ---
+function toggleInfoPanel() {
+  showInfoPanel.value = !showInfoPanel.value;
+}
+
+function closeInfoPanel() {
+  showInfoPanel.value = false;
+}
+
+async function copyMatchCode() {
+  try {
+    await navigator.clipboard.writeText(matchCode.value);
+    ElMessage.success('匹配码已复制到剪贴板');
+  } catch (err) {
+    // 降级方案：使用传统的复制方法
+    const textArea = document.createElement('textarea');
+    textArea.value = matchCode.value;
+    document.body.appendChild(textArea);
+    textArea.select();
+    try {
+      document.execCommand('copy');
+      ElMessage.success('匹配码已复制到剪贴板');
+    } catch (fallbackErr) {
+      ElMessage.error('复制失败，请手动复制');
+    }
+    document.body.removeChild(textArea);
+  }
+}
+
 // --- Session Management ---
 function leaveSession() {
   // 清除cookie刷新定时器
@@ -803,97 +875,275 @@ function scrollToBottom() {
 </script>
 
 <style scoped>
-.session-container { 
-  height: 100vh; 
-  display: flex; 
-  flex-direction: column; 
+.session-container {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
 }
+
+/* 移动端优化的头部 */
 .session-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   border-bottom: 1px solid #e4e7ed;
-  padding: 0 20px;
+  padding: 8px 12px;
+  background: #fff;
+  position: relative;
+  z-index: 10;
+  min-height: 44px;
+  flex-shrink: 0;
 }
-.header-left {
+
+.header-menu-button {
   display: flex;
   align-items: center;
-  gap: 15px;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: #64748b;
 }
-.header-right {
+
+.header-menu-button:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #475569;
+}
+
+.header-spacer {
+  flex: 1;
+}
+
+.header-actions {
   display: flex;
   align-items: center;
-  gap: 15px;
 }
-.storage-info {
+
+/* 左上角小弹窗样式 */
+.info-popup-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.1);
+  z-index: 2000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 60px 12px 12px 12px; /* 为头部留出空间 */
+}
+
+.info-popup {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+  border: 1px solid #e5e7eb;
+  min-width: 280px;
+  max-width: 320px;
+  animation: popupSlideIn 0.2s ease-out;
+}
+
+@keyframes popupSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.info-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f1f5f9;
+  background: #f8fafc;
+  border-radius: 12px 12px 0 0;
+}
+
+.popup-title {
+  font-weight: 600;
+  color: #1e293b;
+  font-size: 0.9rem;
+}
+
+.info-popup-content {
+  padding: 12px 16px;
+}
+
+.popup-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+
+.popup-item:last-child {
+  margin-bottom: 0;
+}
+
+.popup-label {
+  color: #64748b;
+  font-weight: 500;
+  font-size: 0.85rem;
+  min-width: 50px;
+  flex-shrink: 0;
+}
+
+.popup-value {
+  color: #1e293b;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.match-code-popup {
+  font-family: 'Courier New', monospace;
+  font-size: 0.9rem;
+  color: #2563eb;
+  background: #eff6ff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #bfdbfe;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+.match-code-popup:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  transform: scale(1.02);
+}
+
+.storage-popup {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 5px;
-}
-.storage-text {
-  font-size: 0.9rem;
-  color: #606266;
-}
-.storage-progress {
-  width: 120px;
+  gap: 4px;
+  flex: 1;
 }
 
-.unlimited-storage {
-  margin-left: 8px;
-  font-size: 18px;
-  color: #67C23A;
+.storage-text-popup {
+  font-size: 0.8rem;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.storage-progress-popup {
+  width: 100px;
+}
+
+.unlimited-popup {
+  font-size: 16px;
+  color: #16a34a;
   font-weight: bold;
 }
-.message-area { 
-  flex-grow: 1; 
-  padding: 20px; 
-  background-color: #f9fafb; 
-  overflow-y: auto; 
+/* 消息区域 */
+.message-area {
+  flex: 1;
+  padding: 12px;
+  background-color: #f9fafb;
+  overflow-y: auto;
   position: relative;
+  min-height: 0; /* 重要：允许flex子项收缩 */
 }
+
 .message-area.drag-active {
   background-color: #f0f9ff;
 }
-.no-messages { 
-  text-align: center; 
-  color: #909399; 
-  margin-top: 50px; 
+
+.no-messages {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none; /* 允许点击穿透到下层 */
 }
+
+.welcome-message {
+  text-align: center;
+  color: #909399;
+  pointer-events: auto;
+}
+
+.welcome-text {
+  font-size: 1.1rem;
+  margin: 0 0 8px 0;
+  color: #64748b;
+  line-height: 1.4;
+  margin-left: 14px;
+}
+
 .drag-hint {
   font-size: 0.9rem;
   color: #c0c4cc;
-  margin-top: 10px;
+  margin: 0;
+  line-height: 1.4;
 }
-.messages-list { 
-  display: flex; 
-  flex-direction: column; 
-  gap: 15px; 
+
+.messages-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
-.message-bubble-wrapper { 
-  display: flex; 
-  width: 100%; 
+
+.message-bubble-wrapper {
+  display: flex;
+  width: 100%;
 }
-.message-bubble-wrapper.is-self { 
-  justify-content: flex-end; 
+
+.message-bubble-wrapper.is-self {
+  justify-content: flex-end;
 }
-.message-bubble { 
-  max-width: 70%; 
-  padding: 10px 15px; 
-  border-radius: 18px; 
-  background-color: #ffffff; 
-  border: 1px solid #e4e7ed; 
+
+.message-bubble {
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 16px;
+  background-color: #ffffff;
+  border: 1px solid #e4e7ed;
+  word-wrap: break-word;
 }
-.message-bubble-wrapper.is-self .message-bubble { 
-  background-color: #409eff; 
-  color: #ffffff; 
+
+.message-bubble-wrapper.is-self .message-bubble {
+  background-color: #409eff;
+  color: #ffffff;
 }
-.message-input-area { 
-  display: flex; 
-  gap: 10px; 
-  padding: 10px 20px; 
-  border-top: 1px solid #e4e7ed; 
-  align-items: center; 
+
+/* 输入区域 */
+.message-input-area {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid #e4e7ed;
+  align-items: center;
+  background: #fff;
+  flex-shrink: 0;
+  min-height: 52px; /* 固定最小高度 */
+}
+
+.message-input {
+  flex: 1;
+  min-width: 0; /* 重要：允许input收缩 */
 }
 .file-content { 
   display: flex; 
@@ -1066,5 +1316,145 @@ function scrollToBottom() {
 .loading {
   pointer-events: none;
   opacity: 0.7;
+}
+
+/* 移动端响应式样式 */
+@media (max-width: 768px) {
+  .session-header {
+    padding: 6px 8px;
+    min-height: 40px;
+  }
+
+  .header-menu-button {
+    width: 32px;
+    height: 32px;
+  }
+
+  /* 弹窗在移动端的样式调整 */
+  .info-popup-overlay {
+    padding: 50px 8px 8px 8px;
+  }
+
+  .info-popup {
+    min-width: 260px;
+    max-width: 300px;
+  }
+
+  .popup-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .storage-popup {
+    align-items: flex-start;
+    width: 100%;
+  }
+
+  .match-code-popup {
+    font-size: 0.85rem;
+  }
+
+  .message-area {
+    padding: 8px;
+  }
+
+  .messages-list {
+    gap: 8px;
+  }
+
+  .message-bubble {
+    max-width: 90%;
+    padding: 6px 10px;
+    border-radius: 12px;
+    font-size: 0.9rem;
+  }
+
+  .message-input-area {
+    padding: 6px 8px;
+    gap: 6px;
+    min-height: 48px;
+  }
+
+  .image-content {
+    max-width: 200px;
+  }
+
+  .image-preview {
+    max-width: 150px;
+    max-height: 150px;
+  }
+
+  .video-content, .audio-content {
+    max-width: 300px;
+  }
+
+  .video-placeholder, .audio-placeholder {
+    width: 150px;
+    height: 100px;
+  }
+
+  .audio-placeholder {
+    width: 250px;
+    height: 60px;
+  }
+}
+
+/* 超小屏幕优化 */
+@media (max-width: 480px) {
+  .session-header {
+    padding: 4px 6px;
+    min-height: 36px;
+  }
+
+  .header-menu-button {
+    width: 28px;
+    height: 28px;
+  }
+
+  .info-popup-overlay {
+    padding: 45px 6px 6px 6px;
+  }
+
+  .info-popup {
+    min-width: 240px;
+    max-width: 280px;
+  }
+
+  .match-code-popup {
+    font-size: 0.8rem;
+    padding: 3px 6px;
+  }
+
+  .message-area {
+    padding: 6px;
+  }
+
+  .message-bubble {
+    max-width: 95%;
+    padding: 5px 8px;
+    font-size: 0.85rem;
+  }
+
+  .message-input-area {
+    padding: 4px 6px;
+    gap: 4px;
+    min-height: 44px;
+  }
+
+  .image-preview {
+    max-width: 120px;
+    max-height: 120px;
+  }
+
+  .video-placeholder, .audio-placeholder {
+    width: 120px;
+    height: 80px;
+  }
+
+  .audio-placeholder {
+    width: 200px;
+    height: 50px;
+  }
 }
 </style>
