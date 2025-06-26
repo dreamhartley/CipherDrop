@@ -209,7 +209,7 @@ cd backend && npm start
 - `POST /api/upload/complete` - 完成分块上传
 - `GET /api/session/:sessionId/storage` - 获取存储使用情况
 - `GET /api/server/stats` - 获取服务器会话统计信息
-- `GET /download/:filename` - 下载文件
+- `GET /downloads/:sessionId/:filename` - 下载文件
 
 ### WebSocket事件
 - `joinRoom` - 加入会话

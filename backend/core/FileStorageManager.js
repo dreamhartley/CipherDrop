@@ -24,6 +24,10 @@ class FileStorageManager {
    * @returns {string} - 会话存储目录路径
    */
   getSessionDir(sessionId) {
+    // 安全检查：防止路径遍历攻击
+    if (sessionId.includes('..') || sessionId.includes('/') || sessionId.includes('\\')) {
+      throw new Error('Invalid session ID');
+    }
     return path.join(this.baseStorageDir, sessionId);
   }
 

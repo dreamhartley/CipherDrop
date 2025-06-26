@@ -8,6 +8,7 @@ const ChunkedUploadManager = require('./core/ChunkedUploadManager');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const crypto = require('crypto');
 
 const app = express();
@@ -22,12 +23,33 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 // 静态文件服务 - 支持会话目录结构
-app.use('/downloads/:sessionId', (req, res, next) => {
-  const sessionId = req.params.sessionId;
+app.get('/downloads/:sessionId/:filename', (req, res) => {
+  const { sessionId, filename } = req.params;
+
+  // 安全检查：防止路径遍历攻击
+  if (sessionId.includes('..') || sessionId.includes('/') || sessionId.includes('\\') ||
+      filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    return res.status(400).json({ error: 'Invalid path' });
+  }
+
   const fileStorageManager = SessionManager.getFileStorageManager();
   const sessionFilesDir = fileStorageManager.getSessionFilesDir(sessionId);
+  const filePath = path.join(sessionFilesDir, filename);
 
-  express.static(sessionFilesDir)(req, res, next);
+  // 额外安全检查：确保解析后的路径仍在会话目录内
+  const resolvedPath = path.resolve(filePath);
+  const resolvedSessionDir = path.resolve(sessionFilesDir);
+  if (!resolvedPath.startsWith(resolvedSessionDir)) {
+    return res.status(400).json({ error: 'Invalid path' });
+  }
+
+  // 检查文件是否存在
+  if (!fsSync.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  // 发送文件
+  res.sendFile(resolvedPath);
 });
 
 // 初始化分块上传管理器
