@@ -25,10 +25,12 @@ app.use(express.json());
 // 静态文件服务 - 支持会话目录结构
 app.get('/downloads/:sessionId/:filename', (req, res) => {
   const { sessionId, filename } = req.params;
+  console.log(`Download request - Session: ${sessionId}, File: ${filename}`);
 
   // 安全检查：防止路径遍历攻击
   if (sessionId.includes('..') || sessionId.includes('/') || sessionId.includes('\\') ||
       filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    console.log(`Invalid path detected - Session: ${sessionId}, File: ${filename}`);
     return res.status(400).json({ error: 'Invalid path' });
   }
 
@@ -45,9 +47,19 @@ app.get('/downloads/:sessionId/:filename', (req, res) => {
 
   // 检查文件是否存在
   if (!fsSync.existsSync(filePath)) {
+    console.log(`File not found: ${filePath}`);
+    console.log(`Session files dir: ${sessionFilesDir}`);
+    // 列出目录内容进行调试
+    try {
+      const files = fsSync.readdirSync(sessionFilesDir);
+      console.log(`Files in session directory: ${files.join(', ')}`);
+    } catch (error) {
+      console.log(`Cannot read session directory: ${error.message}`);
+    }
     return res.status(404).json({ error: 'File not found' });
   }
 
+  console.log(`Sending file: ${resolvedPath}`);
   // 发送文件
   res.sendFile(resolvedPath);
 });
@@ -60,11 +72,14 @@ const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     // 从请求中获取会话ID，如果没有则使用临时目录
     const sessionId = req.headers['x-session-id'] || 'temp';
+    console.log(`Multer destination - Session: ${sessionId}, File: ${file.originalname}`);
     const fileStorageManager = SessionManager.getFileStorageManager();
     const sessionFilesDir = fileStorageManager.getSessionFilesDir(sessionId);
+    console.log(`Target directory: ${sessionFilesDir}`);
 
     // 确保目录存在
     fileStorageManager.createSessionDirectories(sessionId).then(() => {
+      console.log(`Directory created successfully: ${sessionFilesDir}`);
       cb(null, sessionFilesDir);
     }).catch(error => {
       console.error('Failed to create session directory:', error);
@@ -81,8 +96,31 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: process.env.MAX_SESSION_STORAGE_BYTES || 1073741824 }
+  limits: {
+    fileSize: parseInt(process.env.MAX_SESSION_STORAGE_BYTES) || 1073741824,
+    fieldSize: 50 * 1024 * 1024, // 50MB for field data
+    fields: 10,
+    files: 1
+  }
 });
+
+// 添加Multer错误处理中间件
+const handleMulterError = (error, req, res, next) => {
+  if (error instanceof multer.MulterError) {
+    console.error('Multer error:', error);
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({
+        error: 'File too large',
+        message: `File size exceeds the limit of ${Math.round((parseInt(process.env.MAX_SESSION_STORAGE_BYTES) || 1073741824) / 1024 / 1024)}MB`
+      });
+    }
+    return res.status(400).json({
+      error: 'Upload error',
+      message: error.message
+    });
+  }
+  next(error);
+};
 
 // 根路由，用于健康检查
 app.get('/', (req, res) => {
@@ -103,12 +141,13 @@ app.get('/api/code', (req, res) => {
   res.json({ code: result.matchCode });
 });
 
-app.post('/api/upload', upload.single('file'), async (req, res) => {
+app.post('/api/upload', upload.single('file'), handleMulterError, async (req, res) => {
   if (!req.file) {
     return res.status(400).send({ message: 'Please upload a file.' });
   }
 
   const sessionId = req.headers['x-session-id'] || 'temp';
+  console.log(`File upload - Session: ${sessionId}, File: ${req.file.originalname}, Size: ${req.file.size}, Path: ${req.file.path}`);
 
   // 检查会话存储配额
   try {
@@ -192,7 +231,7 @@ app.post('/api/upload/init', async (req, res) => {
 });
 
 // 上传单个分块
-app.post('/api/upload/chunk', upload.single('chunk'), (req, res) => {
+app.post('/api/upload/chunk', upload.single('chunk'), handleMulterError, (req, res) => {
   const { uploadId, chunkIndex } = req.body;
 
   if (!uploadId || chunkIndex === undefined || !req.file) {
