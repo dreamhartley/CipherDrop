@@ -16,6 +16,7 @@
               placeholder="输入匹配码加入"
               size="large"
               maxlength="6"
+              @input="inputCode = inputCode.toUpperCase()"
               @keyup.enter="joinSession"
             />
             <el-button size="large" @click="joinSession" :disabled="!inputCode">加入</el-button>
