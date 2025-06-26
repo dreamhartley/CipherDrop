@@ -247,14 +247,6 @@ docker-compose up -d
 docker-compose logs -f
 ```
 
-#### 生产环境配置
-```bash
-# 自定义配置
-docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-```
-
-详细部署说明请参考：[DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md)
-
 ### 生产环境建议
 - 使用HTTPS协议确保安全
 - 配置反向代理（Nginx）
