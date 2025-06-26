@@ -3,13 +3,13 @@ const { v4: uuidv4 } = require('uuid');
 const FileStorageManager = require('./FileStorageManager');
 
 const MATCH_CODE_TTL = 10 * 60 * 1000; // 10 minutes
-const SESSION_TTL = 30 * 60 * 1000; // 30 minutes
 const DISCONNECT_GRACE_PERIOD = 20 * 60 * 1000; // 20 minutes
 const UNUSED_SESSION_CLEANUP_PERIOD = 1 * 60 * 1000; // 1 minute for unused sessions
 
 class SessionManager {
   constructor() {
     this.sessions = new Map(); // 使用 Map 存储会话，key 为 matchCode
+    this.sessionLocks = new Set(); // 用于防止并发操作的锁
     this.fileStorageManager = new FileStorageManager();
     this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 30 * 1000); // 每30秒检查一次
     console.log("SessionManager initialized.");
@@ -71,84 +71,130 @@ class SessionManager {
    * @param {string} matchCode
    * @param {string} clientToken - 可选的，用于重连
    * @param {string} socketId
-   * @returns {{status: string, session?: object, clientToken?: string, error?: string}}
+   * @returns {Promise<{status: string, session?: object, clientToken?: string, error?: string}>}
    */
-  joinSession(matchCode, clientToken, socketId) {
-    const session = this.getSession(matchCode);
-    if (!session) {
-      return { status: 'error', error: '无效的匹配码' };
+  async joinSession(matchCode, clientToken, socketId) {
+    // 检查会话锁
+    if (this.sessionLocks.has(matchCode)) {
+      return { status: 'error', error: '会话正在处理中，请稍后重试' };
     }
 
-    // 检查是否是重连
-    if (clientToken && session.clients.has(clientToken)) {
-      const client = session.clients.get(clientToken);
-      client.isConnected = true;
-      client.socketId = socketId;
+    // 加锁
+    this.sessionLocks.add(matchCode);
+
+    try {
+      const session = this.getSession(matchCode);
+      if (!session) {
+        return { status: 'error', error: '无效的匹配码' };
+      }
+
+      // 检查是否是重连
+      if (clientToken && session.clients.has(clientToken)) {
+        const client = session.clients.get(clientToken);
+        console.log(`Client ${clientToken} attempting to reconnect to session ${matchCode}, current connection status: ${client.isConnected}`);
+
+        client.isConnected = true;
+        client.socketId = socketId;
+
+        // 取消清理计时器（如果存在）
+        if (session.cleanupTimer) {
+          clearTimeout(session.cleanupTimer);
+          session.cleanupTimer = null;
+          console.log(`Cancelled cleanup timer for session ${matchCode} due to client ${clientToken} reconnection`);
+        } else {
+          console.log(`No cleanup timer to cancel for session ${matchCode} (client ${clientToken} reconnection)`);
+        }
+
+        console.log(`Client ${clientToken} reconnected to session ${matchCode}`);
+        return { status: 'reconnected', session, clientToken };
+      }
+
+      // 检查会话是否已满 - 基于已连接的客户端数量
+      const connectedClients = [...session.clients.values()].filter(c => c.isConnected).length;
+      console.log(`Session ${matchCode} - Connected clients: ${connectedClients}, Total clients: ${session.clients.size}`);
+
+      if (connectedClients >= 2) {
+        console.log(`Session ${matchCode} is full - rejecting new client`);
+        return { status: 'error', error: '会话已满员' };
+      }
+
+      // 新客户端加入
+      const newClientToken = uuidv4();
+      session.clients.set(newClientToken, {
+        socketId,
+        isConnected: true,
+      });
 
       // 取消清理计时器（如果存在）
       if (session.cleanupTimer) {
         clearTimeout(session.cleanupTimer);
         session.cleanupTimer = null;
-        console.log(`Cancelled cleanup timer for session ${matchCode} due to reconnection`);
+        console.log(`Cancelled cleanup timer for session ${matchCode} due to new client ${newClientToken} joining`);
+      } else {
+        console.log(`No cleanup timer to cancel for session ${matchCode} (new client ${newClientToken} joining)`);
       }
 
-      console.log(`Client ${clientToken} reconnected to session ${matchCode}`);
-      return { status: 'reconnected', session, clientToken };
+      console.log(`New client ${newClientToken} joined session ${matchCode}`);
+      return { status: 'joined', session, clientToken: newClientToken };
+    } finally {
+      // 释放锁
+      this.sessionLocks.delete(matchCode);
     }
-
-    // 检查会话是否已满
-    if (session.clients.size >= 2) {
-      return { status: 'error', error: '会话已满员' };
-    }
-
-    // 新客户端加入
-    const newClientToken = uuidv4();
-    session.clients.set(newClientToken, {
-      socketId,
-      isConnected: true,
-    });
-
-    // 取消清理计时器（如果存在）
-    if (session.cleanupTimer) {
-      clearTimeout(session.cleanupTimer);
-      session.cleanupTimer = null;
-      console.log(`Cancelled cleanup timer for session ${matchCode} due to new client joining`);
-    }
-
-    console.log(`New client ${newClientToken} joined session ${matchCode}`);
-    return { status: 'joined', session, clientToken: newClientToken };
   }
 
   /**
    * 处理客户端断开连接
    * @param {string} socketId
-   * @returns {{session: object, otherClientSocketId: string} | null}
+   * @returns {Promise<{session: object, otherClientSocketId: string} | null>}
    */
-  handleDisconnect(socketId) {
+  async handleDisconnect(socketId) {
     for (const [matchCode, session] of this.sessions.entries()) {
+      let disconnectedClientToken = null;
       for (const [clientToken, client] of session.clients.entries()) {
         if (client.socketId === socketId) {
-          client.isConnected = false;
-          console.log(`Client ${clientToken} disconnected from session ${matchCode}`);
-          
-          // 检查是否所有客户端都已断开
-          const allDisconnected = ![...session.clients.values()].some(c => c.isConnected);
-          if (allDisconnected) {
-            // 启动会话销毁计时器
-            this.startSessionCleanupTimer(matchCode, session);
-          }
-
-          // 寻找另一个客户端以通知对方
-          let otherClientSocketId = null;
-          for (const [otherToken, otherClient] of session.clients.entries()) {
-            if (clientToken !== otherToken && otherClient.isConnected) {
-              otherClientSocketId = otherClient.socketId;
-              break;
-            }
-          }
-          
-          return { session, otherClientSocketId };
+          disconnectedClientToken = clientToken;
+          break;
         }
+      }
+
+      if (disconnectedClientToken) {
+        // 检查会话锁，如果被锁定则延迟处理
+        if (this.sessionLocks.has(matchCode)) {
+          console.log(`Session ${matchCode} is locked, delaying disconnect handling for socket ${socketId}`);
+          setTimeout(() => this.handleDisconnect(socketId), 1000);
+          return null;
+        }
+
+        // 加锁
+        this.sessionLocks.add(matchCode);
+
+        try {
+          const client = session.clients.get(disconnectedClientToken);
+          if (client) {
+            client.isConnected = false;
+            console.log(`Client ${disconnectedClientToken} disconnected from session ${matchCode}`);
+
+            // 检查是否所有客户端都已断开
+            const connectedClients = [...session.clients.values()].filter(c => c.isConnected);
+            console.log(`Session ${matchCode} after disconnect: ${connectedClients.length} connected clients remaining`);
+
+            if (connectedClients.length === 0) {
+              console.log(`All users disconnected from session ${matchCode} - starting cleanup timer`);
+              this.startSessionCleanupTimer(matchCode, session);
+            } else {
+              console.log(`Session ${matchCode} still has active users - cleanup timer not started`);
+            }
+
+            // 寻找另一个已连接的客户端以通知对方
+            const otherClient = connectedClients.find(c => c.socketId !== socketId);
+            return { session, otherClientSocketId: otherClient ? otherClient.socketId : null };
+          }
+        } finally {
+          // 释放锁
+          this.sessionLocks.delete(matchCode);
+        }
+        // 找到会话后跳出外层循环
+        return null;
       }
     }
     return null;
@@ -156,22 +202,40 @@ class SessionManager {
 
   /**
    * 启动会话清理计时器
+   * 只有在所有用户都断开连接时才会调用此方法
    * @param {string} matchCode - 会话匹配码
    * @param {object} session - 会话对象
    */
   startSessionCleanupTimer(matchCode, session) {
+    // 双重检查：确保没有用户连接
+    const connectedClients = [...session.clients.values()].filter(c => c.isConnected);
+    if (connectedClients.length > 0) {
+      console.log(`Session ${matchCode} still has ${connectedClients.length} connected users - not starting cleanup timer`);
+      return;
+    }
+
     // 清除现有的计时器
     if (session.cleanupTimer) {
       clearTimeout(session.cleanupTimer);
+      console.log(`Cleared existing cleanup timer for session ${matchCode}`);
     }
 
     // 根据会话是否有活动决定清理时间
     const cleanupDelay = session.hasActivity ? DISCONNECT_GRACE_PERIOD : UNUSED_SESSION_CLEANUP_PERIOD;
+    const delayMinutes = Math.round(cleanupDelay / 1000 / 60 * 10) / 10; // 保留1位小数
 
-    console.log(`Starting cleanup timer for session ${matchCode}: ${cleanupDelay / 1000}s (${session.hasActivity ? 'active' : 'unused'} session)`);
+    console.log(`Starting cleanup timer for session ${matchCode}: ${delayMinutes} minutes (${session.hasActivity ? 'used' : 'unused'} session, ${session.history.length} messages, ${session.clients.size} total clients)`);
 
     session.cleanupTimer = setTimeout(async () => {
-      console.log(`Cleaning up ${session.hasActivity ? 'active' : 'unused'} session: ${matchCode}`);
+      // 在清理前再次检查是否有用户连接（防止竞态条件）
+      const currentConnectedClients = [...session.clients.values()].filter(c => c.isConnected);
+      if (currentConnectedClients.length > 0) {
+        console.log(`Session ${matchCode} cleanup cancelled - users reconnected (${currentConnectedClients.length} connected)`);
+        session.cleanupTimer = null;
+        return;
+      }
+
+      console.log(`Executing scheduled cleanup for session ${matchCode} (${session.hasActivity ? 'used' : 'unused'} session)`);
       await this.deleteSession(matchCode);
     }, cleanupDelay);
   }
@@ -189,6 +253,12 @@ class SessionManager {
       return null;
     }
 
+    // 检查客户端是否已连接
+    const client = session.clients.get(clientToken);
+    if (!client || !client.isConnected) {
+      return null;
+    }
+
     const fullMessage = {
       ...message,
       sender: clientToken,
@@ -203,6 +273,7 @@ class SessionManager {
     if (session.cleanupTimer) {
       clearTimeout(session.cleanupTimer);
       session.cleanupTimer = null;
+      console.log(`Cancelled cleanup timer for session ${matchCode} due to new message activity`);
     }
 
     return fullMessage;
@@ -215,12 +286,17 @@ class SessionManager {
   async deleteSession(matchCode) {
     const session = this.sessions.get(matchCode);
     if (!session) {
+      console.log(`Attempted to delete non-existent session: ${matchCode}`);
       return;
     }
+
+    const connectedClients = [...session.clients.values()].filter(c => c.isConnected);
+    console.log(`Deleting session ${matchCode}: hasActivity=${session.hasActivity}, messages=${session.history.length}, totalClients=${session.clients.size}, connectedClients=${connectedClients.length}`);
 
     // 清除清理计时器
     if (session.cleanupTimer) {
       clearTimeout(session.cleanupTimer);
+      console.log(`Cleared cleanup timer for session ${matchCode} during deletion`);
     }
 
     // 删除会话存储目录
@@ -228,51 +304,75 @@ class SessionManager {
 
     // 从内存中删除会话
     this.sessions.delete(matchCode);
-    console.log(`Session ${matchCode} deleted`);
+    console.log(`Session ${matchCode} successfully deleted (${this.sessions.size} sessions remaining)`);
   }
 
   /**
    * 清理过期的会话
+   * 注意：这个方法作为备用清理机制，主要清理计时器可能遗漏的会话
+   * 正常情况下，会话应该通过 startSessionCleanupTimer 设置的计时器来清理
+   *
+   * 清理规则：
+   * 1. 有用户连接的会话永远不会被清理
+   * 2. 未使用的会话（无消息/文件）：断开连接1分钟后清理
+   * 3. 已使用的会话（有消息/文件）：断开连接20分钟后清理
    */
   async cleanupExpiredSessions() {
     const now = Date.now();
-    console.log('Running cleanup task...');
+    console.log('Running periodic cleanup task...');
 
     const expiredSessions = [];
 
     // 查找过期的会话
     for (const [matchCode, session] of this.sessions.entries()) {
       const timeSinceLastActivity = now - session.lastActivityAt;
-      const allDisconnected = ![...session.clients.values()].some(c => c.isConnected);
+      const connectedClients = [...session.clients.values()].filter(c => c.isConnected);
+      const hasConnectedUsers = connectedClients.length > 0;
+
+      console.log(`Checking session ${matchCode}: hasConnectedUsers=${hasConnectedUsers}, hasActivity=${session.hasActivity}, timeSinceLastActivity=${Math.round(timeSinceLastActivity/1000)}s, hasCleanupTimer=${!!session.cleanupTimer}`);
 
       // 判断会话是否应该被清理
       let shouldCleanup = false;
+      let reason = '';
 
-      // 会话超过最大生存时间
-      if (timeSinceLastActivity > SESSION_TTL) {
-        shouldCleanup = true;
+      // 重要：如果有用户连接，绝对不清理
+      if (hasConnectedUsers) {
+        console.log(`Session ${matchCode} has ${connectedClients.length} connected users - skipping cleanup`);
+        continue;
       }
-      // 所有客户端都断开连接的情况
-      else if (allDisconnected) {
-        // 未使用的会话（没有消息或文件上传）快速清理
-        if (!session.hasActivity && timeSinceLastActivity > UNUSED_SESSION_CLEANUP_PERIOD) {
-          shouldCleanup = true;
-        }
-        // 有活动的会话使用正常的宽限期
-        else if (session.hasActivity && timeSinceLastActivity > DISCONNECT_GRACE_PERIOD) {
-          shouldCleanup = true;
-        }
+
+      // 如果已经有清理计时器在运行，不要重复清理
+      if (session.cleanupTimer) {
+        console.log(`Session ${matchCode} already has cleanup timer - skipping`);
+        continue;
+      }
+
+      // 只有在所有客户端都断开连接的情况下才考虑清理
+      // 未使用的会话（没有消息或文件上传）快速清理
+      if (!session.hasActivity && timeSinceLastActivity > UNUSED_SESSION_CLEANUP_PERIOD) {
+        shouldCleanup = true;
+        reason = `unused session exceeded grace period (${UNUSED_SESSION_CLEANUP_PERIOD/1000} seconds)`;
+      }
+      // 有活动的会话使用正常的宽限期
+      else if (session.hasActivity && timeSinceLastActivity > DISCONNECT_GRACE_PERIOD) {
+        shouldCleanup = true;
+        reason = `active session exceeded grace period (${DISCONNECT_GRACE_PERIOD/1000/60} minutes)`;
       }
 
       if (shouldCleanup) {
-        expiredSessions.push(matchCode);
+        console.log(`Session ${matchCode} marked for cleanup: ${reason}`);
+        expiredSessions.push({ matchCode, reason });
       }
     }
 
     // 删除过期的会话
-    for (const matchCode of expiredSessions) {
-      console.log(`Cleaning up expired session: ${matchCode}`);
+    for (const { matchCode, reason } of expiredSessions) {
+      console.log(`Cleaning up expired session ${matchCode}: ${reason}`);
       await this.deleteSession(matchCode);
+    }
+
+    if (expiredSessions.length > 0) {
+      console.log(`Periodic cleanup completed: ${expiredSessions.length} sessions cleaned up`);
     }
 
     // 清理孤立的存储目录
@@ -343,6 +443,7 @@ class SessionManager {
       if (session.cleanupTimer) {
         clearTimeout(session.cleanupTimer);
         session.cleanupTimer = null;
+        console.log(`Cancelled cleanup timer for session ${sessionId} due to file upload activity`);
       }
     }
   }

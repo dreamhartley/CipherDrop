@@ -367,29 +367,34 @@ app.delete('/api/upload/:uploadId', (req, res) => {
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
 
-  socket.on('joinRoom', (data) => {
+  socket.on('joinRoom', async (data) => {
     const { code, clientToken } = data;
     if (!code) {
       return socket.emit('error', { message: '无效的请求' });
     }
 
-    const result = SessionManager.joinSession(code, clientToken, socket.id);
+    try {
+      const result = await SessionManager.joinSession(code, clientToken, socket.id);
 
-    if (result.status === 'error') {
-      return socket.emit('error', { message: result.error });
-    }
+      if (result.status === 'error') {
+        return socket.emit('error', { message: result.error });
+      }
 
-    socket.join(result.session.matchCode);
-    
-    socket.emit('sessionJoined', {
-      clientToken: result.clientToken,
-      history: result.session.history,
-    });
-    
-    // 检查会话中的连接数，如果达到2，则通知双方
-    const connectedClients = [...result.session.clients.values()].filter(c => c.isConnected).length;
-    if (connectedClients === 2) {
-      io.to(result.session.matchCode).emit('userConnected');
+      socket.join(result.session.matchCode);
+
+      socket.emit('sessionJoined', {
+        clientToken: result.clientToken,
+        history: result.session.history,
+      });
+
+      // 检查会话中的连接数，如果达到2，则通知双方
+      const connectedClients = [...result.session.clients.values()].filter(c => c.isConnected).length;
+      if (connectedClients === 2) {
+        io.to(result.session.matchCode).emit('userConnected');
+      }
+    } catch (error) {
+      console.error('Error in joinRoom:', error);
+      socket.emit('error', { message: '加入会话时发生错误，请重试' });
     }
   });
 
@@ -408,12 +413,16 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
-    const result = SessionManager.handleDisconnect(socket.id);
-    if (result && result.otherClientSocketId) {
-      io.to(result.otherClientSocketId).emit('userDisconnected');
+  socket.on('disconnect', async () => {
+    try {
+      const result = await SessionManager.handleDisconnect(socket.id);
+      if (result && result.otherClientSocketId) {
+        io.to(result.otherClientSocketId).emit('userDisconnected');
+      }
+      console.log('User disconnected:', socket.id);
+    } catch (error) {
+      console.error('Error in disconnect handler:', error);
     }
-    console.log('User disconnected:', socket.id);
   });
 });
 

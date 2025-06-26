@@ -285,6 +285,10 @@ const storageUsage = reactive({
 // Cookie刷新定时器
 let cookieRefreshTimer = null;
 
+// 连接状态标志
+let isConnecting = false;
+let hasJoinedSession = false;
+
 // --- Lifecycle and Connection ---
 onMounted(() => {
   // 检测设备类型
@@ -300,29 +304,50 @@ onMounted(() => {
   // 重置连接状态
   connectionStatus.type = 'info';
   connectionStatus.text = '正在连接...';
+  isConnecting = false;
+  hasJoinedSession = false;
 
-  socket.connect();
-  socket.on('connect', () => {
-    connectionStatus.text = '正在加入房间...';
-    socket.emit('joinRoom', { code: matchCode.value, clientToken: clientToken.value });
-  });
+  // 清理之前的事件监听器
+  socket.off('connect');
+  socket.off('sessionJoined');
+  socket.off('receiveMessage');
+  socket.off('userConnected');
+  socket.off('userDisconnected');
+  socket.off('error');
+  socket.off('disconnect');
+  socket.off('reconnect');
+
+  // 绑定事件监听器
+  socket.on('connect', handleConnect);
   socket.on('sessionJoined', handleSessionJoined);
   socket.on('receiveMessage', handleReceiveMessage);
-  socket.on('userConnected', () => { connectionStatus.text = '双方已连接'; });
-  socket.on('userDisconnected', () => { connectionStatus.text = '对方已离线'; });
-  socket.on('error', (e) => {
-    ElMessage.error(e.message);
-    // 如果会话错误，可能是无效的匹配码，返回主页
-    if (e.message.includes('无效') || e.message.includes('不存在')) {
-      setTimeout(() => {
-        router.push('/');
-      }, 2000);
-    }
-  });
-  socket.on('disconnect', () => { connectionStatus.text = '已断开连接'; });
+  socket.on('userConnected', handleUserConnected);
+  socket.on('userDisconnected', handleUserDisconnected);
+  socket.on('error', handleSocketError);
+  socket.on('disconnect', handleDisconnect);
+  socket.on('reconnect', handleReconnect);
+
+  // 连接socket
+  if (!socket.connected) {
+    socket.connect();
+  } else {
+    // 如果已经连接，直接尝试加入房间
+    handleConnect();
+  }
 });
 
 onUnmounted(() => {
+  // 清理事件监听器
+  socket.off('connect', handleConnect);
+  socket.off('sessionJoined', handleSessionJoined);
+  socket.off('receiveMessage', handleReceiveMessage);
+  socket.off('userConnected', handleUserConnected);
+  socket.off('userDisconnected', handleUserDisconnected);
+  socket.off('error', handleSocketError);
+  socket.off('disconnect', handleDisconnect);
+  socket.off('reconnect', handleReconnect);
+
+  // 断开连接
   socket.disconnect();
 
   // 清除cookie刷新定时器
@@ -336,13 +361,23 @@ onUnmounted(() => {
 
   // 清理本地状态
   history.splice(0, history.length);
+  isConnecting = false;
+  hasJoinedSession = false;
 });
 
 // --- Storage Usage ---
-async function fetchStorageUsage() {
+let storageUsageRequestInProgress = false;
+
+async function fetchStorageUsage(force = false) {
   if (!matchCode.value) return;
 
+  // 防止重复请求
+  if (storageUsageRequestInProgress && !force) {
+    return;
+  }
+
   try {
+    storageUsageRequestInProgress = true;
     storageUsage.loading = true;
     const usage = await api.getSessionStorageUsage(matchCode.value);
     Object.assign(storageUsage, {
@@ -358,11 +393,69 @@ async function fetchStorageUsage() {
   } catch (error) {
     console.error('Failed to fetch storage usage:', error);
     storageUsage.loading = false;
+  } finally {
+    storageUsageRequestInProgress = false;
   }
+}
+
+// --- Socket Event Handlers ---
+function handleConnect() {
+  console.log(`Socket connected. isConnecting: ${isConnecting}, hasJoinedSession: ${hasJoinedSession}, clientToken: ${clientToken.value}`);
+
+  if (isConnecting || hasJoinedSession) {
+    console.log('Skipping joinRoom - already connecting or joined');
+    return; // 防止重复连接
+  }
+
+  isConnecting = true;
+  connectionStatus.text = '正在加入房间...';
+  console.log(`Emitting joinRoom with code: ${matchCode.value}, clientToken: ${clientToken.value}`);
+  socket.emit('joinRoom', { code: matchCode.value, clientToken: clientToken.value });
+}
+
+function handleReconnect() {
+  console.log('Socket reconnected');
+  connectionStatus.text = '重新连接成功';
+  // 重连后不需要重新加入房间，因为后端会处理重连逻辑
+}
+
+function handleUserConnected() {
+  connectionStatus.text = '双方已连接';
+}
+
+function handleUserDisconnected() {
+  connectionStatus.text = '对方已离线';
+}
+
+function handleSocketError(e) {
+  console.error('Socket error:', e);
+  ElMessage.error(e.message);
+  isConnecting = false;
+
+  // 如果会话错误，可能是无效的匹配码，返回主页
+  if (e.message.includes('无效') || e.message.includes('不存在') || e.message.includes('满员')) {
+    setTimeout(() => {
+      router.push('/');
+    }, 2000);
+  }
+}
+
+function handleDisconnect() {
+  connectionStatus.text = '已断开连接';
+  isConnecting = false;
+  // 注意：不要重置 hasJoinedSession，因为重连时需要保持状态
 }
 
 // --- Handlers ---
 function handleSessionJoined(data) {
+  // 防止重复处理
+  if (hasJoinedSession) {
+    return;
+  }
+
+  hasJoinedSession = true;
+  isConnecting = false;
+
   clientToken.value = data.clientToken;
   sessionStorage.setItem(matchCode.value, data.clientToken);
 
@@ -371,7 +464,7 @@ function handleSessionJoined(data) {
 
   // 设置会话cookie，允许页面刷新
   const sessionToken = props.sessionToken || route.params.sessionToken;
-  if (sessionToken) {
+  if (sessionToken && !cookieRefreshTimer) {
     setSessionCookie(matchCode.value, data.clientToken, sessionToken);
 
     // 启动cookie刷新定时器（每10分钟刷新一次）
@@ -401,8 +494,10 @@ function handleSessionJoined(data) {
   connectionStatus.type = 'success';
   connectionStatus.text = '已连接';
 
-  // 获取存储使用情况
-  fetchStorageUsage();
+  // 获取存储使用情况（只在首次加入时获取）
+  if (!storageUsage.loading && storageUsage.currentUsage === 0) {
+    fetchStorageUsage();
+  }
 
   scrollToBottom();
 }
@@ -616,8 +711,8 @@ async function processFiles(files) {
 
       socket.emit('sendMessage', { matchCode: matchCode.value, clientToken: clientToken.value, message: finalMessage });
 
-      // 更新存储使用情况
-      fetchStorageUsage();
+      // 更新存储使用情况（强制刷新）
+      fetchStorageUsage(true);
     } catch (err) {
       console.error("File handling failed:", err);
       ElMessage.error(`处理文件 ${file.name} 时出错`);
