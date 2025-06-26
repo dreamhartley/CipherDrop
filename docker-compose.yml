@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # 后端服务
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cipherdrop-backend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      # - BASE_URL=https://yourdomain.com  # 使用自定义域名时取消注释并修改
+      - MAX_SESSION_STORAGE_BYTES=1073741824  # 1GB
+      - MAX_ACTIVE_SESSIONS=5
+    volumes:
+      # 持久化存储目录
+      - cipherdrop_storage:/app/storage
+    networks:
+      - cipherdrop-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 前端服务
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cipherdrop-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - cipherdrop-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# 网络配置
+networks:
+  cipherdrop-network:
+    driver: bridge
+
+# 数据卷配置
+volumes:
+  cipherdrop_storage:
+    driver: local

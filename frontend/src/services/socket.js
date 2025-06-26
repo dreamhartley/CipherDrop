@@ -1,0 +1,10 @@
+import { io } from 'socket.io-client';
+
+// "undefined" a特殊值，Vite会将其替换为服务器的URL
+// 在开发中，由于有代理，它会连接到 'ws://localhost:5173/socket.io'，然后被代理到 3001 端口
+// 在生产中，它会连接到同源的服务器
+const URL = process.env.NODE_ENV === 'production' ? undefined : 'http://localhost:5173';
+
+export const socket = io(URL, {
+  autoConnect: false, // 我们将手动连接
+});
