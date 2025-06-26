@@ -891,19 +891,18 @@ async function generateImagePreview(message) {
   }
 
   try {
-    let blob;
+    // 所有文件都是加密的，进行流式解密
+    const encryptedBuffer = await api.downloadFile(message.metadata.downloadUrl);
+    const key = await streamCrypto.importKey(message.metadata.key);
+    const nonce = await streamCrypto.importKey(message.metadata.nonce);
 
-    if (message.metadata.encrypted === false || !message.metadata.key) {
-      // 未加密的文件，直接下载
-      const fileBuffer = await api.downloadFile(message.metadata.downloadUrl);
-      blob = new Blob([fileBuffer], { type: message.metadata.mimeType || message.metadata.type });
-    } else {
-      // 加密的文件，需要解密
-      const encryptedBuffer = await api.downloadFile(message.metadata.downloadUrl);
-      const key = await crypto.importKey(message.metadata.key);
-      const decryptedBuffer = await crypto.decrypt(encryptedBuffer, key);
-      blob = new Blob([decryptedBuffer], { type: message.metadata.mimeType || message.metadata.type });
-    }
+    const decryptedBuffer = await streamCrypto.decryptDataStream(
+      new Uint8Array(encryptedBuffer),
+      nonce,
+      key
+    );
+
+    const blob = new Blob([decryptedBuffer], { type: message.metadata.mimeType || message.metadata.type });
 
     const previewUrl = URL.createObjectURL(blob);
 
