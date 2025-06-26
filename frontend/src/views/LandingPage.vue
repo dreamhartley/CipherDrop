@@ -5,6 +5,7 @@
         <template #header>
           <div class="card-header">
             <span>端到端加密传输</span>
+            <div class="subtitle">消息和文件仅在客户端可用</div>
           </div>
         </template>
         <div class="action-section">
@@ -24,6 +25,9 @@
         </div>
       </el-card>
     </el-main>
+    <el-footer class="footer">
+      <p>Copyright © 2025 CipherDrop</p>
+    </el-footer>
   </el-container>
 </template>
 
@@ -80,14 +84,25 @@ function joinSession() {
 <style scoped>
 .landing-container {
   display: flex;
-  justify-content: center;
-  align-items: center;
+  flex-direction: column;
   height: 100%;
   background-color: #e9eef3;
 }
 .main-content {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
   max-width: 400px;
   width: 100%;
+  margin: 0 auto;
+}
+.footer {
+  width: 100%;
+  text-align: center;
+  padding: 10px 0;
+  color: #909399;
+  font-size: 12px;
 }
 .box-card {
   border-radius: 12px;
@@ -96,6 +111,12 @@ function joinSession() {
   text-align: center;
   font-size: 1.5rem;
   font-weight: bold;
+}
+.subtitle {
+  font-size: 12px;
+  color: #909399;
+  font-weight: normal;
+  margin-top: 5px;
 }
 .action-section {
   display: flex;
