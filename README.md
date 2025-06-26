@@ -170,7 +170,6 @@ CipherDrop/
 ### 环境变量 (.env)
 ```env
 PORT=3001                           # 服务器端口
-#BASE_URL=https://yourdomain.com    # 基础URL(使用自定义域名时取消注释，默认: http://localhost)
 MAX_SESSION_STORAGE_BYTES=1073741824 # 会话存储限制(1GB，设置为-1表示无限存储)
 MAX_ACTIVE_SESSIONS=5               # 最大活跃会话数量(设置为-1表示无限制)
 ```

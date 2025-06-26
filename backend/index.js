@@ -109,9 +109,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
   // 确保文件名正确处理中文
   const originalName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
 
-  // 生成下载URL
-  const baseUrl = process.env.BASE_URL || 'http://localhost';
-  const downloadUrl = `${baseUrl}/downloads/${sessionId}/${req.file.filename}`;
+  // 生成相对下载URL，由前端代理处理
+  const downloadUrl = `/downloads/${sessionId}/${req.file.filename}`;
 
   const fileData = {
     name: originalName,

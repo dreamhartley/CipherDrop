@@ -11,7 +11,6 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
-      # - BASE_URL=https://yourdomain.com  # 使用自定义域名时取消注释并修改
       - MAX_SESSION_STORAGE_BYTES=1073741824  # 1GB
       - MAX_ACTIVE_SESSIONS=5
     volumes:

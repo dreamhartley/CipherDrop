@@ -101,9 +101,8 @@ class FileStorageManager {
     const fileName = `${timestamp}-${originalName}`;
     const filePath = path.join(this.getSessionFilesDir(sessionId), fileName);
 
-    // 使用BASE_URL环境变量生成完整的下载URL
-    const baseUrl = process.env.BASE_URL || 'http://localhost';
-    const downloadUrl = `${baseUrl}/downloads/${sessionId}/${fileName}`;
+    // 生成相对下载URL，由前端代理处理
+    const downloadUrl = `/downloads/${sessionId}/${fileName}`;
 
     return {
       filePath,
