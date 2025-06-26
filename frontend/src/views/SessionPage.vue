@@ -672,7 +672,8 @@ function handleDragEnter(e) {
 function handleDragLeave(e) {
   e.preventDefault();
   // 只有当离开整个拖拽区域时才隐藏覆盖层
-  if (!e.relatedTarget || !messageAreaRef.value.$el.contains(e.relatedTarget)) {
+  const messageArea = messageAreaRef.value;
+  if (!e.relatedTarget || !messageArea || !(messageArea.$el || messageArea)?.contains?.(e.relatedTarget)) {
     isDragActive.value = false;
   }
 }
@@ -904,7 +905,9 @@ function scrollToBottom() {
   nextTick(() => {
     if (messageAreaRef.value) {
       const el = messageAreaRef.value.$el || messageAreaRef.value;
-      el.scrollTop = el.scrollHeight;
+      if (el && typeof el.scrollTop !== 'undefined') {
+        el.scrollTop = el.scrollHeight;
+      }
     }
   });
 }
