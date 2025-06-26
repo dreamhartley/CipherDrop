@@ -40,6 +40,12 @@
 - **资源保护**：防止服务器资源过度消耗
 - **弹性配置**：支持设置为-1表示无限会话
 
+### 🔒 安全防护
+- **API访问控制**：仅允许通过前端网页访问API
+- **来源验证**：严格验证请求来源和Referer头
+- **自动化工具检测**：阻止curl、wget、Postman等工具直接访问
+- **CORS保护**：限制跨域访问，仅允许授权域名
+
 ### 🌐 用户体验
 - **简单易用**：6位匹配码快速连接
 - **页面刷新支持**：30分钟cookie会话保持
@@ -186,6 +192,7 @@ CipherDrop/
 PORT=3001                           # 服务器端口
 MAX_SESSION_STORAGE_BYTES=1073741824 # 会话存储限制(1GB，设置为-1表示无限存储)
 MAX_ACTIVE_SESSIONS=5               # 最大活跃会话数量(设置为-1表示无限制)
+ALLOWED_ORIGINS=                    # 允许的前端域名(用逗号分隔，留空使用默认值)
 ```
 
 ### 上传配置
@@ -215,24 +222,6 @@ cd frontend && npm run build
 # 生产环境运行
 cd backend && npm start
 ```
-
-### API接口
-- `GET /api/code` - 生成匹配码
-- `POST /api/upload` - 普通文件上传
-- `POST /api/upload/init` - 初始化分块上传
-- `POST /api/upload/chunk` - 上传文件分块
-- `POST /api/upload/complete` - 完成分块上传
-- `GET /api/session/:sessionId/storage` - 获取存储使用情况
-- `GET /api/server/stats` - 获取服务器会话统计信息
-- `GET /downloads/:sessionId/:filename` - 下载文件
-
-### WebSocket事件
-- `joinRoom` - 加入会话
-- `sendMessage` - 发送消息
-- `sessionJoined` - 会话加入成功
-- `receiveMessage` - 接收消息
-- `userConnected` - 用户连接
-- `userDisconnected` - 用户断开
 
 ## 🚀 部署指南
 

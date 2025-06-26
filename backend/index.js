@@ -20,8 +20,127 @@ const io = new Server(server, {
   }
 });
 
-app.use(cors());
+// 获取允许的域名列表
+const getAllowedOrigins = () => {
+  const envOrigins = process.env.ALLOWED_ORIGINS;
+  if (envOrigins) {
+    return envOrigins.split(',').map(origin => origin.trim());
+  }
+
+  // 默认允许的域名（开发和生产环境）
+  return [
+    'http://localhost:5173',  // Vite开发服务器
+    'http://localhost',       // 生产环境（通过nginx）
+    'http://127.0.0.1:5173',  // 本地IP开发
+    'http://127.0.0.1'        // 本地IP生产
+  ];
+};
+
+// 配置CORS - 限制只允许授权的域名访问
+app.use(cors({
+  origin: function (origin, callback) {
+    const allowedOrigins = getAllowedOrigins();
+
+    // 允许同源请求（origin为undefined，如直接访问服务器）和授权的域名
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log(`CORS blocked request from unauthorized origin: ${origin}`);
+      // 不抛出错误，而是返回false，让后续中间件处理
+      callback(null, false);
+    }
+  },
+  credentials: true
+}));
+
 app.use(express.json());
+
+// API访问控制中间件 - 验证请求来源
+const apiAccessControl = (req, res, next) => {
+  // 检查是否是API请求
+  if (!req.path.startsWith('/api/')) {
+    return next();
+  }
+
+  // 获取请求头信息
+  const referer = req.get('Referer');
+  const origin = req.get('Origin');
+  const userAgent = req.get('User-Agent');
+  const xRequestedWith = req.get('X-Requested-With');
+  const host = req.get('Host');
+
+  // 获取允许的来源
+  const allowedOrigins = getAllowedOrigins();
+
+  // 检查来源是否合法
+  let isValidOrigin = false;
+
+  // 检查Origin头
+  if (origin && allowedOrigins.includes(origin)) {
+    isValidOrigin = true;
+  }
+
+  // 检查Referer头（作为备用验证）
+  if (!isValidOrigin && referer) {
+    for (const allowedOrigin of allowedOrigins) {
+      if (referer.startsWith(allowedOrigin)) {
+        isValidOrigin = true;
+        break;
+      }
+    }
+  }
+
+  // 检查是否是通过代理的请求（开发环境）
+  if (!isValidOrigin && host) {
+    // 如果请求来自本地主机且有X-Requested-With头，可能是通过Vite代理
+    if ((host === 'localhost:3001' || host === '127.0.0.1:3001') &&
+        xRequestedWith === 'XMLHttpRequest') {
+      isValidOrigin = true;
+    }
+  }
+
+  // 额外的User-Agent检查，阻止明显的自动化工具
+  if (userAgent) {
+    const suspiciousAgents = [
+      'curl', 'wget', 'postman', 'insomnia', 'httpie', 'python-requests',
+      'go-http-client', 'java/', 'okhttp', 'apache-httpclient', 'node-fetch'
+    ];
+
+    const lowerUserAgent = userAgent.toLowerCase();
+    for (const suspicious of suspiciousAgents) {
+      if (lowerUserAgent.includes(suspicious)) {
+        console.log(`Blocked API access from suspicious User-Agent: ${userAgent}`);
+        return res.status(403).json({
+          error: 'Access denied',
+          message: 'Automated access is not permitted'
+        });
+      }
+    }
+  }
+
+  // 如果没有Origin、Referer且不是合法的代理请求，可能是直接API调用
+  if (!origin && !referer && !isValidOrigin) {
+    console.log(`Blocked direct API access to ${req.path} from ${req.ip}`);
+    return res.status(403).json({
+      error: 'Access denied',
+      message: 'API access is restricted to web interface only'
+    });
+  }
+
+  // 如果来源不合法
+  if (!isValidOrigin) {
+    console.log(`Blocked API access to ${req.path} from unauthorized origin: ${origin || referer || 'unknown'}`);
+    return res.status(403).json({
+      error: 'Access denied',
+      message: 'API access is restricted to authorized origins only'
+    });
+  }
+
+  next();
+};
+
+// 应用API访问控制中间件
+app.use(apiAccessControl);
 // 静态文件服务 - 支持会话目录结构
 app.get('/downloads/:sessionId/:filename', (req, res) => {
   const { sessionId, filename } = req.params;

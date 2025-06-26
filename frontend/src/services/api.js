@@ -5,7 +5,20 @@ const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  withCredentials: true, // 发送凭据以支持CORS
 });
+
+// 添加请求拦截器，确保所有请求都包含必要的头信息
+apiClient.interceptors.request.use(
+  (config) => {
+    // 确保请求包含正确的Origin头
+    config.headers['X-Requested-With'] = 'XMLHttpRequest';
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
 
 export default {
   /**

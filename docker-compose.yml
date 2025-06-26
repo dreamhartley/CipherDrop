@@ -13,6 +13,8 @@ services:
       - PORT=3001
       - MAX_SESSION_STORAGE_BYTES=1073741824  # 1GB
       - MAX_ACTIVE_SESSIONS=5
+      # 生产环境只允许通过nginx代理访问
+      - ALLOWED_ORIGINS=http://localhost
     volumes:
       # 持久化存储目录
       - cipherdrop_storage:/app/storage
