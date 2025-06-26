@@ -23,11 +23,8 @@ export const uploadConfig = {
   
   // 普通上传配置
   normal: {
-    // 最大文件大小 (100MB - Cloudflare 免费套餐限制)
-    maxFileSize: 100 * 1024 * 1024,
-    
-    // 超时时间 (10分钟)
-    timeout: 10 * 60 * 1000
+    // 超时时间 (30分钟，支持大文件上传)
+    timeout: 30 * 60 * 1000
   },
   
   // 支持的文件类型
@@ -101,13 +98,8 @@ export function shouldUseChunkedUpload(file) {
  * @returns {boolean} - 是否超过限制
  */
 export function isFileSizeValid(file) {
-  // 如果支持分块上传，则没有大小限制
-  if (shouldUseChunkedUpload(file)) {
-    return true;
-  }
-  
-  // 普通上传检查大小限制
-  return file.size <= uploadConfig.normal.maxFileSize;
+  // 使用流式加密，支持所有大小的文件
+  return true;
 }
 
 /**
@@ -178,11 +170,7 @@ export function validateFile(file) {
     errors: []
   };
 
-  // 检查文件大小（只有在不支持分块上传时才检查）
-  if (!isFileSizeValid(file)) {
-    result.valid = false;
-    result.errors.push(`文件大小超过限制 (${formatFileSize(uploadConfig.normal.maxFileSize)})`);
-  }
+  // 使用流式加密，支持所有大小的文件，不进行大小检查
 
   // 文件传输助手支持所有文件类型，不进行类型检查
 

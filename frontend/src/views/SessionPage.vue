@@ -90,7 +90,6 @@
                   <div class="file-name">{{ msg.metadata.name }}</div>
                   <div class="file-size">
                     {{ formatFileSize(msg.metadata.size) }}
-                    <span v-if="msg.metadata.encrypted === false" class="unencrypted-badge">未加密</span>
                   </div>
                 </div>
               </div>
@@ -120,7 +119,6 @@
                   <div class="file-name">{{ msg.metadata.name }}</div>
                   <div class="file-size">
                     {{ formatFileSize(msg.metadata.size) }}
-                    <span v-if="msg.metadata.encrypted === false" class="unencrypted-badge">未加密</span>
                   </div>
                 </div>
               </div>
@@ -134,7 +132,6 @@
                   <div class="file-name">{{ msg.metadata.name }}</div>
                   <div class="file-size">
                     {{ formatFileSize(msg.metadata.size) }}
-                    <span v-if="msg.metadata.encrypted === false" class="unencrypted-badge">未加密</span>
                   </div>
                 </div>
               </div>
@@ -222,14 +219,15 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, nextTick, h } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, nextTick } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import { ElMessage, ElImageViewer, ElMessageBox } from 'element-plus';
+import { ElMessage, ElImageViewer } from 'element-plus';
 import { Document, Paperclip, Picture, Upload, VideoPlay, Microphone, Loading, Operation, Close } from '@element-plus/icons-vue';
 import { socket } from '../services/socket';
 import api from '../services/api';
-import crypto from '../services/crypto';
+import streamCrypto from '../services/streamCrypto';
 import { ChunkedUploader } from '../services/chunkedUpload';
+import { EncryptedChunkedUploader } from '../services/encryptedChunkedUpload';
 import { validateFile, formatFileSize } from '../config/upload';
 import { setSessionCookie, deleteSessionCookie, refreshSessionCookie } from '../utils/cookies';
 
@@ -617,58 +615,7 @@ async function uploadFileChunked(encryptedFile, fileMessage) {
   return await uploader.upload(encryptedFile);
 }
 
-// 大文件加密警告状态
-const largeFileEncryptionWarningShown = ref(false);
 
-// 显示大文件加密警告弹窗
-async function showLargeFileEncryptionWarning() {
-  return new Promise((resolve) => {
-    // 使用一个简单的变量来跟踪勾选状态
-    let dontShowAgain = false;
-
-    const messageVNode = h('div', [
-      h('p', { style: 'margin-bottom: 15px; line-height: 1.5;' },
-        '由于浏览器内存限制，超过100MB的文件不支持端到端加密，但仍会在会话结束后自动销毁。'
-      ),
-      h('div', { style: 'display: flex; align-items: center; margin-top: 15px;' }, [
-        h('input', {
-          type: 'checkbox',
-          id: 'dontShowAgain',
-          style: 'margin-right: 8px;',
-          onInput: (e) => {
-            dontShowAgain = e.target.checked;
-          }
-        }),
-        h('label', {
-          for: 'dontShowAgain',
-          style: 'cursor: pointer; user-select: none; font-size: 14px;'
-        }, '本次会话中不再提示')
-      ])
-    ]);
-
-    ElMessageBox({
-      title: '大文件上传提醒',
-      message: messageVNode,
-      type: 'warning',
-      showCancelButton: true,
-      confirmButtonText: '继续上传',
-      cancelButtonText: '取消',
-      beforeClose: (action, instance, done) => {
-        if (action === 'confirm') {
-          if (dontShowAgain) {
-            largeFileEncryptionWarningShown.value = true;
-          }
-          resolve(true);
-        } else {
-          resolve(false);
-        }
-        done();
-      }
-    }).catch(() => {
-      resolve(false);
-    });
-  });
-}
 
 async function processFiles(files) {
   for (const file of files) {
@@ -681,15 +628,7 @@ async function processFiles(files) {
 
     const fileId = `${Date.now()}-${Math.random()}`;
     const isChunkedUpload = ChunkedUploader.shouldUseChunkedUpload(file);
-    const isLargeFile = file.size > 100 * 1024 * 1024; // 100MB
-
-    // 检查是否需要显示大文件加密警告
-    if (isLargeFile && !largeFileEncryptionWarningShown.value) {
-      const shouldContinue = await showLargeFileEncryptionWarning();
-      if (!shouldContinue) {
-        continue; // 用户取消上传
-      }
-    }
+    const useEncryptedChunkedUpload = EncryptedChunkedUploader.shouldUseEncryptedChunkedUpload(file);
 
     const fileMessage = reactive({
       id: fileId,
@@ -698,7 +637,6 @@ async function processFiles(files) {
       timestamp: Date.now(),
       progress: 0,
       isChunkedUpload,
-      isLargeFile,
       metadata: {
         name: file.name,
         size: file.size,
@@ -724,27 +662,38 @@ async function processFiles(files) {
     try {
       let uploadedFileData;
       let encryptionKey = null;
+      let encryptionNonce = null;
 
-      if (isLargeFile) {
-        // 大文件不进行端到端加密，直接上传原文件
-        if (isChunkedUpload) {
-          uploadedFileData = await uploadFileChunked(file, fileMessage);
-        } else {
-          uploadedFileData = await api.uploadFile(file, (progressEvent) => {
-            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            fileMessage.progress = percentCompleted;
-          }, matchCode.value);
-        }
+      if (useEncryptedChunkedUpload) {
+        // 大文件使用加密分块上传
+        const uploader = new EncryptedChunkedUploader({
+          sessionId: matchCode.value,
+          onProgress: (progressInfo) => {
+            fileMessage.progress = progressInfo.percentage;
+          },
+          onError: (error) => {
+            console.error('Encrypted chunked upload error:', error);
+          }
+        });
+
+        uploadedFileData = await uploader.upload(file);
+        encryptionKey = uploadedFileData.key;
+        encryptionNonce = uploadedFileData.nonce;
       } else {
-        // 小文件进行端到端加密
-        const key = await crypto.generateKey();
-        encryptionKey = await crypto.exportKey(key);
+        // 小文件使用内存加密
+        const key = await streamCrypto.generateKey();
+        encryptionKey = await streamCrypto.exportKey(key);
 
-        const fileBuffer = await file.arrayBuffer();
-        const encryptedBuffer = await crypto.encrypt(fileBuffer, key);
+        // 使用流式加密
+        const { encryptedData, nonce } = await streamCrypto.encryptFileStream(file, key, (progressInfo) => {
+          // 加密进度占总进度的50%
+          fileMessage.progress = Math.round(progressInfo.percentage * 0.5);
+        });
+
+        encryptionNonce = await streamCrypto.exportKey(nonce);
 
         // 创建一个新的File对象，保持原始文件名
-        const encryptedFile = new File([encryptedBuffer], file.name, {
+        const encryptedFile = new File([encryptedData], file.name, {
           type: file.type || 'application/octet-stream'
         });
 
@@ -752,8 +701,9 @@ async function processFiles(files) {
           uploadedFileData = await uploadFileChunked(encryptedFile, fileMessage);
         } else {
           uploadedFileData = await api.uploadFile(encryptedFile, (progressEvent) => {
+            // 上传进度占总进度的50%，从50%开始
             const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            fileMessage.progress = percentCompleted;
+            fileMessage.progress = 50 + Math.round(percentCompleted * 0.5);
           }, matchCode.value);
         }
       }
@@ -761,11 +711,12 @@ async function processFiles(files) {
       // 更新消息元数据
       Object.assign(fileMessage.metadata, {
         ...uploadedFileData,
-        key: encryptionKey, // 大文件时为null，小文件时为加密密钥
+        key: encryptionKey, // 加密密钥
+        nonce: encryptionNonce, // 加密随机数
         name: file.name,
         type: file.type,
         mimeType: file.type,
-        encrypted: !isLargeFile // 标记是否加密
+        encrypted: true // 所有文件都加密
       });
       fileMessage.progress = 100;
 
@@ -781,10 +732,11 @@ async function processFiles(files) {
         metadata: {
           ...uploadedFileData,
           key: encryptionKey,
+          nonce: encryptionNonce,
           name: file.name,
           type: file.type,
           mimeType: file.type,
-          encrypted: !isLargeFile
+          encrypted: true // 所有文件都加密
         },
       };
 
@@ -808,17 +760,18 @@ async function downloadFile(msg) {
 
     let blob;
 
-    if (msg.metadata.encrypted === false || !msg.metadata.key) {
-      // 未加密的文件，直接下载
-      const fileBuffer = await api.downloadFile(msg.metadata.downloadUrl);
-      blob = new Blob([fileBuffer], { type: msg.metadata.mimeType || msg.metadata.type });
-    } else {
-      // 加密的文件，需要解密
-      const encryptedBuffer = await api.downloadFile(msg.metadata.downloadUrl);
-      const key = await crypto.importKey(msg.metadata.key);
-      const decryptedBuffer = await crypto.decrypt(encryptedBuffer, key);
-      blob = new Blob([decryptedBuffer], { type: msg.metadata.mimeType || msg.metadata.type });
-    }
+    // 所有文件都是加密的，进行流式解密
+    const encryptedBuffer = await api.downloadFile(msg.metadata.downloadUrl);
+    const key = await streamCrypto.importKey(msg.metadata.key);
+    const nonce = await streamCrypto.importKey(msg.metadata.nonce);
+
+    const decryptedBuffer = await streamCrypto.decryptDataStream(
+      new Uint8Array(encryptedBuffer),
+      nonce,
+      key
+    );
+
+    blob = new Blob([decryptedBuffer], { type: msg.metadata.mimeType || msg.metadata.type });
 
     // 如果是图片文件且还没有预览，生成预览
     if (isImageFile(msg.metadata) && !msg.imagePreview) {
@@ -995,17 +948,18 @@ async function generateMediaPreview(message, autoGenerate = false) {
   try {
     let blob;
 
-    if (message.metadata.encrypted === false || !message.metadata.key) {
-      // 未加密的文件，直接下载
-      const fileBuffer = await api.downloadFile(message.metadata.downloadUrl);
-      blob = new Blob([fileBuffer], { type: message.metadata.mimeType || message.metadata.type });
-    } else {
-      // 加密的文件，需要解密
-      const encryptedBuffer = await api.downloadFile(message.metadata.downloadUrl);
-      const key = await crypto.importKey(message.metadata.key);
-      const decryptedBuffer = await crypto.decrypt(encryptedBuffer, key);
-      blob = new Blob([decryptedBuffer], { type: message.metadata.mimeType || message.metadata.type });
-    }
+    // 所有文件都是加密的，进行流式解密
+    const encryptedBuffer = await api.downloadFile(message.metadata.downloadUrl);
+    const key = await streamCrypto.importKey(message.metadata.key);
+    const nonce = await streamCrypto.importKey(message.metadata.nonce);
+
+    const decryptedBuffer = await streamCrypto.decryptDataStream(
+      new Uint8Array(encryptedBuffer),
+      nonce,
+      key
+    );
+
+    blob = new Blob([decryptedBuffer], { type: message.metadata.mimeType || message.metadata.type });
 
     const previewUrl = URL.createObjectURL(blob);
 
@@ -1459,22 +1413,7 @@ function scrollToBottom() {
 }
 
 
-.unencrypted-badge {
-  display: inline-block;
-  background-color: #fff2e8;
-  color: #fa8c16;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 0.7rem;
-  margin-left: 8px;
-  border: 1px solid #ffbb96;
-}
 
-.message-bubble-wrapper.is-self .unencrypted-badge {
-  background-color: rgba(255, 255, 255, 0.2);
-  color: #ffffff;
-  border-color: rgba(255, 255, 255, 0.3);
-}
 .file-progress { 
   width: 100px; 
   margin: 10px 0;
